@@ -26,8 +26,8 @@ from ryu.lib.packet import ether_types
 HARD_TIMEOUT = 600
 IDLE_TIMEOUT = 300
 
-VLAN_RANGE_PHYSNET1 = (1101,1120)
-SHARED_VFC_PHYSNET1 = "br40"
+VLAN_RANGE_PHYSNET1 = (3290,3299)
+SHARED_VFC_PHYSNET1 = "br63"
 
 
 class SimpleSwitch13(app_manager.RyuApp):
@@ -37,11 +37,6 @@ class SimpleSwitch13(app_manager.RyuApp):
         super(SimpleSwitch13, self).__init__(*args, **kwargs)
         self.mac_to_port = {}
        
-
-
-      
-
-
     @set_ev_cls(ofp_event.EventOFPSwitchFeatures, CONFIG_DISPATCHER)
     def switch_features_handler(self, ev):
         datapath = ev.msg.datapath
@@ -172,15 +167,6 @@ class SimpleSwitch13(app_manager.RyuApp):
                 actions.append(parser.OFPActionOutput(port))
 
         self.logger.info("--- actions : %s ", actions )
-
-
-        #if dst in self.mac_to_port[dpid]:
-        #    out_port = self.mac_to_port[dpid][dst]
-        #else:
-        #    out_port = ofproto.OFPP_ALL
-
-        #actions = [parser.OFPActionOutput(out_port)]
-
 
         # install a flow to avoid packet_in next time
         if out_port != ofproto.OFPP_ALL:
