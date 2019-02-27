@@ -26,8 +26,10 @@ from ryu.lib.packet import ether_types
 HARD_TIMEOUT = 600
 IDLE_TIMEOUT = 300
 
-VLAN_RANGE_PHYSNET1 = (3290,3299)
+VLAN_RANGE_PHYSNET1 = (3010,3400)
 SHARED_VFC_PHYSNET1 = "br63"
+
+
 
 
 class SimpleSwitch13(app_manager.RyuApp):
@@ -37,6 +39,7 @@ class SimpleSwitch13(app_manager.RyuApp):
         super(SimpleSwitch13, self).__init__(*args, **kwargs)
         self.mac_to_port = {}
        
+
     @set_ev_cls(ofp_event.EventOFPSwitchFeatures, CONFIG_DISPATCHER)
     def switch_features_handler(self, ev):
         datapath = ev.msg.datapath
@@ -58,8 +61,11 @@ class SimpleSwitch13(app_manager.RyuApp):
         
         ### Send port description request message
         self.vlan_to_portgroup = {}
-        self.vlan_to_portgroup = {vlan : [] for vlan in range(VLAN_RANGE_PHYSNET1[0],VLAN_RANGE_PHYSNET1[1]+1)}
+        self.uplink_port_range=(int(str(VLAN_RANGE_PHYSNET1[0])[-3:]),int(str(VLAN_RANGE_PHYSNET1[1])[-3:]))
+
+        self.vlan_to_portgroup = {vlan : [] for vlan in range(self.uplink_port_range[0],self.uplink_port_range[1]+1)}
         self.send_port_desc_stats_request(datapath)
+        self.logger.info("--- [switch_features_handler] uplink_port_range: %s", self.uplink_port_range)
         ###self.logger.info("--- [switch_features_handler] vlan_to_portgroup : %s", self.vlan_to_portgroup)
 
 
@@ -147,26 +153,37 @@ class SimpleSwitch13(app_manager.RyuApp):
         self.mac_to_port[dpid][src] = in_port
 
         ### Print mac_to_port 
-        self.logger.info("--- mac_to_port : %s ", self.mac_to_port )
+        self.logger.info("--- [_packet_in_handler] mac_to_port : %s ", self.mac_to_port )
 
 
         if dst in self.mac_to_port[dpid]:
-            self.logger.info("--- dst in mac_to_port : %s ", dst )
+            self.logger.info("--- [_packet_in_handler] dst in mac_to_port : %s ", dst )
             out_port = self.mac_to_port[dpid][dst]
             actions = [parser.OFPActionOutput(out_port)]
         else:
-            self.logger.info("--- dst NOT in mac_to_port : %s ", dst )
-            vlan = self.find_portgroup(in_port)
-            self.logger.info("--- vlan : %s ", vlan )
-            portgroup = [ int(x) for x in self.vlan_to_portgroup[vlan]]
-            self.logger.info("--- portgroup : %s ", portgroup )
+            self.logger.info("--- [_packet_in_handler] dst NOT in mac_to_port : %s ", dst )
+            pp = self.find_portgroup(in_port)
+            self.logger.info("--- [_packet_in_handler] pp : %s ", pp )
+            portgroup = [ int(x) for x in self.vlan_to_portgroup[pp]]
+            self.logger.info("--- [_packet_in_handler] portgroup : %s ", portgroup )
 
             out_port = ofproto.OFPP_ALL
             actions = []
             for port in portgroup:
-                actions.append(parser.OFPActionOutput(port))
+                if not port == in_port: 
+                    actions.append(parser.OFPActionOutput(port))
 
-        self.logger.info("--- actions : %s ", actions )
+        self.logger.info("--- [_packet_in_handler] in_port : %s ", in_port )
+        self.logger.info("--- [_packet_in_handler] actions : %s ", actions )
+
+
+        #if dst in self.mac_to_port[dpid]:
+        #    out_port = self.mac_to_port[dpid][dst]
+        #else:
+        #    out_port = ofproto.OFPP_ALL
+
+        #actions = [parser.OFPActionOutput(out_port)]
+
 
         # install a flow to avoid packet_in next time
         if out_port != ofproto.OFPP_ALL:
@@ -214,7 +231,8 @@ class SimpleSwitch13(app_manager.RyuApp):
 
         ### Send port description request message and re-create vlan_to_portgroup
         self.vlan_to_portgroup = {}
-        self.vlan_to_portgroup = {vlan : [] for vlan in range(VLAN_RANGE_PHYSNET1[0],VLAN_RANGE_PHYSNET1[1]+1)}
+        ####self.vlan_to_portgroup = {vlan : [] for vlan in range(VLAN_RANGE_PHYSNET1[0],VLAN_RANGE_PHYSNET1[1]+1)}
+        self.vlan_to_portgroup = {p : [] for p in range(self.uplink_port_range[0],self.uplink_port_range[1]+1)}
         self.send_port_desc_stats_request(dp)
         self.logger.info("--- [_port_status_handler] vlan_to_portgroup : %s", self.vlan_to_portgroup)
 
@@ -247,16 +265,24 @@ class SimpleSwitch13(app_manager.RyuApp):
     def vlan_to_portgroup_handler(self, port_name): 
 
         if len(port_name.split('-')) == 2:
+
             bridge, port_no = port_name.split('-')
-            if bridge == SHARED_VFC_PHYSNET1 and ( VLAN_RANGE_PHYSNET1[0] <= int(port_no) <= VLAN_RANGE_PHYSNET1[1] ):
+            if bridge == SHARED_VFC_PHYSNET1 and ( self.uplink_port_range[0] <= int(port_no) <= self.uplink_port_range[1] ):
                 self.logger.info("--- [vlan_to_portgroup_handler] Uplink port : %s", port_no)
-                vlan_tag = port_no
-                self.set_key(self.vlan_to_portgroup, int(vlan_tag), port_no) 
+                self.set_key(self.vlan_to_portgroup, int(port_no), port_no) 
             else: 
                 self.logger.info("--- [vlan_to_portgroup_handler] Access port : %s", port_no)
-                port_last_3digits = str(port_no)[-3:]
+                if len(str(port_no)) < 3:
+                    port_no_str = '0' + str(port_no)
+                else:
+                    port_no_str = str(port_no)
+                port_last_3digits = str(port_no_str)[-3:]
                 for i in self.vlan_to_portgroup.keys():
-                    vlan_last_3digits = str(i)[-3:]
+                    if len(str(i)) < 3:
+                        i_str = '0' + str(i)
+                    else:
+                        i_str = str(i)
+                    vlan_last_3digits = str(i_str)[-3:]
                     if vlan_last_3digits == port_last_3digits:
                         self.set_key(self.vlan_to_portgroup, i, port_no)
                         break
@@ -267,11 +293,24 @@ class SimpleSwitch13(app_manager.RyuApp):
 
 
     def find_portgroup(self, port_no):
-        port_last_3digits = str(port_no)[-3:]
+        if len(str(port_no)) < 3:
+            port_no_str = '0' + str(port_no)
+        else:
+            port_no_str = str(port_no)
+        port_last_3digits = str(port_no_str)[-3:]       
+ 
         for i in self.vlan_to_portgroup.keys():
-            vlan_last_3digits = str(i)[-3:]
+            if len(str(i)) < 3:
+                i_str = '0' + str(i)
+            else:
+                i_str = str(i)
+            vlan_last_3digits = str(i_str)[-3:]
+
             if vlan_last_3digits == port_last_3digits:
                 vlan = i
+                break
+            else:
+                vlan = None
         return vlan
 
 
