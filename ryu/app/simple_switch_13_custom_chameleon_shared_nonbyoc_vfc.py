@@ -13,14 +13,28 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+
+import array
+import netaddr
+
 from ryu.base import app_manager
 from ryu.controller import ofp_event
 from ryu.controller.handler import CONFIG_DISPATCHER, MAIN_DISPATCHER
 from ryu.controller.handler import set_ev_cls
 from ryu.ofproto import ofproto_v1_3
+from ryu.ofproto import ether
+from ryu.ofproto import inet
 from ryu.lib.packet import packet
 from ryu.lib.packet import ethernet
 from ryu.lib.packet import ether_types
+from ryu.lib.packet import arp
+from ryu.lib.packet import ipv4
+from ryu.lib.packet import icmp
+#from ryu.lib import mac
+from ryu.lib import addrconv
+
+from ryu.ofproto.ofproto_v1_3 import OFPG_ANY
+from ryu.ofproto.ofproto_v1_3 import OFPMPF_REQ_MORE
 
 
 HARD_TIMEOUT = 600
@@ -46,6 +60,9 @@ class SimpleSwitch13(app_manager.RyuApp):
         ofproto = datapath.ofproto
         parser = datapath.ofproto_parser
 
+        #clear any residual flows
+        self.clear_flows(datapath)
+
         # install table-miss flow entry
         #
         # We specify NO BUFFER to max_len of the output action due to
@@ -58,6 +75,8 @@ class SimpleSwitch13(app_manager.RyuApp):
                                           ofproto.OFPCML_NO_BUFFER)]
 
         self.add_flow(datapath, 0, match, actions)
+
+  
         
         ### Send port description request message
         self.vlan_to_portgroup = {}
@@ -67,6 +86,58 @@ class SimpleSwitch13(app_manager.RyuApp):
         self.send_port_desc_stats_request(datapath)
         self.logger.info("--- [switch_features_handler] uplink_port_range: %s", self.uplink_port_range)
         ###self.logger.info("--- [switch_features_handler] vlan_to_portgroup : %s", self.vlan_to_portgroup)
+
+    def remove_table_flows(self, datapath, table_id, match, instructions):
+        """Create OFP flow mod message to remove flows from table."""
+        ofproto = datapath.ofproto
+        flow_mod = datapath.ofproto_parser.OFPFlowMod(datapath, 0, 0, table_id,
+                                                      ofproto.OFPFC_DELETE, 0, 0,
+                                                      1,
+                                                      ofproto.OFPCML_NO_BUFFER,
+                                                      ofproto.OFPP_ANY,
+                                                      OFPG_ANY, 0,
+                                                      match, instructions)
+        return flow_mod
+
+    def remove_flows(self, datapath, table_id):
+        """Removing all flow entries."""
+        parser = datapath.ofproto_parser
+        ofproto = datapath.ofproto
+        empty_match = parser.OFPMatch()
+        instructions = []
+        flow_mod = self.remove_table_flows(datapath, table_id,
+                                           empty_match, instructions)
+        self.logger.info("deleting all flow entries in table ")
+        datapath.send_msg(flow_mod)
+
+        #add controller flow
+        match = parser.OFPMatch()
+        actions = [parser.OFPActionOutput(ofproto.OFPP_CONTROLLER,
+                                          ofproto.OFPCML_NO_BUFFER)]
+
+        self.add_flow(datapath, 0, match, actions)
+
+
+
+    def clear_flows(self, datapath):
+        ofproto = datapath.ofproto
+        parser = datapath.ofproto_parser
+
+        self.logger.info("clear flows ")
+        self.remove_flows(datapath,0)
+
+        # install table-miss flow entry
+        #
+        # We specify NO BUFFER to max_len of the output action due to
+        # OVS bug. At this moment, if we specify a lesser number, e.g.,
+        # 128, OVS will send Packet-In with invalid buffer_id and
+        # truncated packet data. In that case, we cannot output packets
+        # correctly.  The bug has been fixed in OVS v2.1.0.
+        match = parser.OFPMatch()
+        actions = [parser.OFPActionOutput(ofproto.OFPP_CONTROLLER,
+                                          ofproto.OFPCML_NO_BUFFER)]
+
+        self.add_flow(datapath, 0, match, actions)
 
 
     def add_flow(self, datapath, priority, match, actions, buffer_id=None):
@@ -118,6 +189,32 @@ class SimpleSwitch13(app_manager.RyuApp):
                                 instructions=inst)
 
         datapath.send_msg(mod)
+
+
+    def _build_arp(self, opcode, src_ip, src_mac, dst_ip, dst_mac):
+        if opcode == arp.ARP_REQUEST:
+            _eth_dst_mac = self.BROADCAST_MAC
+            _arp_dst_mac = self.ZERO_MAC
+        elif opcode == arp.ARP_REPLY:
+            _eth_dst_mac = dst_mac
+            _arp_dst_mac = dst_mac
+
+        e = self._build_ether(ether.ETH_TYPE_ARP, _eth_dst_mac)
+        a = arp.arp(hwtype=1, proto=ether.ETH_TYPE_IP, hlen=6, plen=4,
+                    opcode=opcode, src_mac=src_mac, src_ip=src_ip,
+                    dst_mac=_arp_dst_mac, dst_ip=dst_ip)
+        p = packet.Packet()
+        p.add_protocol(e)
+        p.add_protocol(a)
+        p.serialize()
+
+        return p
+
+    def _find_protocol(self, pkt, name):
+        for p in pkt.protocols:
+            if hasattr(p, 'protocol_name'):
+                if p.protocol_name == name:
+                    return p
 
 
     @set_ev_cls(ofp_event.EventOFPPacketIn, MAIN_DISPATCHER)
@@ -200,13 +297,58 @@ class SimpleSwitch13(app_manager.RyuApp):
         data = None
         if msg.buffer_id == ofproto.OFP_NO_BUFFER:
             data = msg.data
+   
 
-        out = parser.OFPPacketOut(datapath=datapath, 
-                                  buffer_id=msg.buffer_id,
-                                  in_port=in_port, 
-                                  actions=actions, 
-                                  data=data)
-        datapath.send_msg(out)
+        buffer_id = msg.buffer_id
+	#if msg.buffer_id != ofproto.OFP_NO_BUFFER:
+	#    buffer_id = 0xffffffff
+            
+        #out = parser.OFPPacketOut(datapath=datapath,
+        #                              buffer_id=msg.buffer_id,
+        #                              in_port=in_port,
+        #                              actions=actions,
+        #                              data=data)
+        #datapath.send_msg(out)
+
+
+        
+	for action in actions:
+            send_data=data
+            buffer_id = msg.buffer_id
+ 	    pkt = packet.Packet(array.array('B', msg.data))
+            p_arp = self._find_protocol(pkt, "arp")
+            if p_arp:
+                buffer_id = 0xffffffff
+                src_ip = str(netaddr.IPAddress(p_arp.src_ip))
+                dst_ip = str(netaddr.IPAddress(p_arp.dst_ip))
+                if p_arp.opcode == arp.ARP_REQUEST:
+                    self.logger.info("--- PacketIn: ARP_Request: %s (%s)->%s (%s)", src_ip, src, dst_ip, dst)
+                    _eth_dst_mac = dst
+            	    _arp_dst_mac = dst
+                elif p_arp.opcode == arp.ARP_REPLY:
+	    	    self.logger.info("--- PacketIn: ARP_Repy %s (%s)->%s (%s)", src_ip, src, dst_ip, dst)
+                    _eth_dst_mac = dst
+                    _arp_dst_mac = dst
+
+	        e = ethernet.ethernet(_eth_dst_mac, src, ether.ETH_TYPE_ARP)
+                a = arp.arp(hwtype=1, proto=ether.ETH_TYPE_IP, hlen=6, plen=4,
+                        opcode=p_arp.opcode, src_mac=src, src_ip=src_ip,
+                        dst_mac=_arp_dst_mac, dst_ip=dst_ip)
+                p = packet.Packet()
+                p.add_protocol(e)
+                p.add_protocol(a)
+                p.serialize()
+                self.logger.info("--- p.data = " + str(p.data))
+                send_data=p.data 
+
+            self.logger.info("--- single action : " + str(action) + ", data: " + str(send_data))
+            single_action = [ action ]
+            out = parser.OFPPacketOut(datapath=datapath, 
+                                      buffer_id=buffer_id,
+                                      in_port=in_port, 
+                                      actions=single_action, 
+                                      data=send_data)
+            datapath.send_msg(out)
 
     @set_ev_cls(ofp_event.EventOFPPortStatus, MAIN_DISPATCHER)
     def _port_status_handler(self, ev):
