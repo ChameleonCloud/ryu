@@ -274,15 +274,6 @@ class SimpleSwitch13(app_manager.RyuApp):
         self.logger.info("--- [SHAREDVFC - _packet_in_handler] in_port : %s ", in_port )
         self.logger.info("--- [SHAREDVFC - _packet_in_handler] actions : %s ", actions )
 
-
-        #if dst in self.mac_to_port[dpid]:
-        #    out_port = self.mac_to_port[dpid][dst]
-        #else:
-        #    out_port = ofproto.OFPP_ALL
-
-        #actions = [parser.OFPActionOutput(out_port)]
-
-
         # install a flow to avoid packet_in next time
         if out_port != ofproto.OFPP_ALL:
             match = parser.OFPMatch(in_port=in_port, eth_dst=dst, eth_src=src)
@@ -301,55 +292,48 @@ class SimpleSwitch13(app_manager.RyuApp):
         if msg.buffer_id == ofproto.OFP_NO_BUFFER:
             data = msg.data
    
+        pkt = packet.Packet(array.array('B', msg.data))
+        p_arp = self._find_protocol(pkt, "arp")
+        if p_arp:
+            self.logger.info("--- [SHAREDVFC - _packet_in_handler] ARP " )
+            for action in actions:
+                buffer_id = 0xffffffff
+                src_ip = str(netaddr.IPAddress(p_arp.src_ip))
+                dst_ip = str(netaddr.IPAddress(p_arp.dst_ip))
+                self.logger.info("--- [SHAREDVFC - _packet_in_handler] ARP p_arp.opcode %s ", p_arp.opcode )
+                if p_arp.opcode == 1:
+                    self.logger.info("--- [SHAREDVFC - _packet_in_handler] ARP_Request: %s (%s)->%s (%s)", src_ip, src, dst_ip, dst)
+                    _eth_dst_mac = dst
+                    _arp_dst_mac = dst
+                elif p_arp.opcode == 2:
+                    self.logger.info("--- [SHAREDVFC - _packet_in_handler] ARP_Repy %s (%s)->%s (%s)", src_ip, src, dst_ip, dst)
+                    _eth_dst_mac = dst
+                    _arp_dst_mac = dst
+                e = ethernet.ethernet(_eth_dst_mac, src, ether.ETH_TYPE_ARP)
+                a = arp.arp(hwtype=1, proto=ether.ETH_TYPE_IP, hlen=6, plen=4,
+                     opcode=p_arp.opcode, src_mac=src, src_ip=src_ip,
+                     dst_mac=_arp_dst_mac, dst_ip=dst_ip)
+                p = packet.Packet()
+                p.add_protocol(e)
+                p.add_protocol(a)
+                p.serialize()
+                send_data=p.data 
+                self.logger.info("--- [SHAREDVFC - _packet_in_handler] single action : " + str(action) )
+                single_action = [ action ]
+                out = parser.OFPPacketOut(datapath=datapath, 
+                                       buffer_id=buffer_id,
+                                       in_port=in_port, 
+                                       actions=single_action, 
+                                       data=send_data)
+                datapath.send_msg(out)
+        else:
+            out = parser.OFPPacketOut(datapath=datapath,
+                                       buffer_id=msg.buffer_id,
+                                       in_port=in_port,
+                                       actions=actions,
+                                       data=data)
+            datapath.send_msg(out)
 
-        #buffer_id = msg.buffer_id
-            
-        out = parser.OFPPacketOut(datapath=datapath,
-                                      buffer_id=msg.buffer_id,
-                                      in_port=in_port,
-                                      actions=actions,
-                                      data=data)
-        datapath.send_msg(out)
-
-
-        
-	#for action in actions:
-        #    send_data = data
-        #    buffer_id = msg.buffer_id
- 	#    pkt = packet.Packet(array.array('B', msg.data))
-        #    p_arp = self._find_protocol(pkt, "arp")
-        #    if p_arp:
-        #        buffer_id = 0xffffffff
-        #        src_ip = str(netaddr.IPAddress(p_arp.src_ip))
-        #        dst_ip = str(netaddr.IPAddress(p_arp.dst_ip))
-        #        if p_arp.opcode == arp.ARP_REQUEST:
-        #            self.logger.info("--- [SHAREDVFC - _packet_in_handler] PacketIn: ARP_Request: %s (%s)->%s (%s)", src_ip, src, dst_ip, dst)
-        #            _eth_dst_mac = dst
-        #    	    _arp_dst_mac = dst
-        #        elif p_arp.opcode == arp.ARP_REPLY:
-	#    	    self.logger.info("--- [SHAREDVFC - _packet_in_handler] PacketIn: ARP_Repy %s (%s)->%s (%s)", src_ip, src, dst_ip, dst)
-        #            _eth_dst_mac = dst
-        #            _arp_dst_mac = dst
-
-	#        e = ethernet.ethernet(_eth_dst_mac, src, ether.ETH_TYPE_ARP)
-        #        a = arp.arp(hwtype=1, proto=ether.ETH_TYPE_IP, hlen=6, plen=4,
-        #                opcode=p_arp.opcode, src_mac=src, src_ip=src_ip,
-        #                dst_mac=_arp_dst_mac, dst_ip=dst_ip)
-        #        p = packet.Packet()
-        #        p.add_protocol(e)
-        #        p.add_protocol(a)
-        #        p.serialize()
-        #        self.logger.info("--- [SHAREDVFC - _packet_in_handler] p.data = " + str(p.data))
-        #        send_data=p.data 
-
-        #    self.logger.info("--- [SHAREDVFC - _packet_in_handler] single action : " + str(action) + ", data: " + str(send_data))
-        #    single_action = [ action ]
-        #    out = parser.OFPPacketOut(datapath=datapath, 
-        #                              buffer_id=buffer_id,
-        #                              in_port=in_port, 
-        #                              actions=single_action, 
-        #                              data=send_data)
-        #    datapath.send_msg(out)
 
     @set_ev_cls(ofp_event.EventOFPPortStatus, MAIN_DISPATCHER)
     def _port_status_handler(self, ev):
