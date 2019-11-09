@@ -40,7 +40,7 @@ from ryu.ofproto.ofproto_v1_3 import OFPMPF_REQ_MORE
 HARD_TIMEOUT = 600
 IDLE_TIMEOUT = 300
 
-VLAN_RANGE_PHYSNET1 = (3010,3400)
+VLAN_RANGE_PHYSNET1 = (3010,3288)
 SHARED_VFC_PHYSNET1 = "br63"
 
 
@@ -84,7 +84,7 @@ class SimpleSwitch13(app_manager.RyuApp):
 
         self.vlan_to_portgroup = {vlan : [] for vlan in range(self.uplink_port_range[0],self.uplink_port_range[1]+1)}
         self.send_port_desc_stats_request(datapath)
-        self.logger.info("--- [switch_features_handler] uplink_port_range: %s", self.uplink_port_range)
+        self.logger.info("--- [SHAREDVFC - switch_features_handler] uplink_port_range: %s", self.uplink_port_range)
         ###self.logger.info("--- [switch_features_handler] vlan_to_portgroup : %s", self.vlan_to_portgroup)
 
     def remove_table_flows(self, datapath, table_id, match, instructions):
@@ -107,7 +107,7 @@ class SimpleSwitch13(app_manager.RyuApp):
         instructions = []
         flow_mod = self.remove_table_flows(datapath, table_id,
                                            empty_match, instructions)
-        self.logger.info("deleting all flow entries in table ")
+        self.logger.info("SHAREDVFC - deleting all flow entries in table ")
         datapath.send_msg(flow_mod)
 
         #add controller flow
@@ -123,7 +123,7 @@ class SimpleSwitch13(app_manager.RyuApp):
         ofproto = datapath.ofproto
         parser = datapath.ofproto_parser
 
-        self.logger.info("clear flows ")
+        self.logger.info("SHAREDVFC - clear flows ")
         self.remove_flows(datapath,0)
 
         # install table-miss flow entry
@@ -222,7 +222,7 @@ class SimpleSwitch13(app_manager.RyuApp):
         # If you hit this you might want to increase
         # the "miss_send_length" of your switch
         if ev.msg.msg_len < ev.msg.total_len:
-            self.logger.debug("packet truncated: only %s of %s bytes",
+            self.logger.debug("--- [SHAREDVFC - _packet_in_handler] packet truncated: only %s of %s bytes",
                               ev.msg.msg_len, ev.msg.total_len)
 
         msg = ev.msg
@@ -243,35 +243,36 @@ class SimpleSwitch13(app_manager.RyuApp):
         dpid = datapath.id
         self.mac_to_port.setdefault(dpid, {})
 
-        self.logger.info("packet in %s %s %s %s", dpid, src, dst, in_port)
+        self.logger.info("--- [SHAREDVFC - _packet_in_handler] packet in %s %s %s %s", dpid, src, dst, in_port)
         ###self.send_port_stats_request(datapath)
 
         # learn a mac address to avoid FLOOD next time.
         self.mac_to_port[dpid][src] = in_port
 
         ### Print mac_to_port 
-        self.logger.info("--- [_packet_in_handler] mac_to_port : %s ", self.mac_to_port )
+        self.logger.info("--- [SHAREDVFC - _packet_in_handler] mac_to_port : %s ", self.mac_to_port )
 
 
         if dst in self.mac_to_port[dpid]:
-            self.logger.info("--- [_packet_in_handler] dst in mac_to_port : %s ", dst )
+            self.logger.info("--- [SHAREDVFC - _packet_in_handler] dst in mac_to_port : %s ", dst )
             out_port = self.mac_to_port[dpid][dst]
             actions = [parser.OFPActionOutput(out_port)]
         else:
-            self.logger.info("--- [_packet_in_handler] dst NOT in mac_to_port : %s ", dst )
+            self.logger.info("--- [SHAREDVFC - _packet_in_handler] dst NOT in mac_to_port : %s ", dst )
             pp = self.find_portgroup(in_port)
-            self.logger.info("--- [_packet_in_handler] pp : %s ", pp )
+            self.logger.info("--- [SHAREDVFC - _packet_in_handler] pp : %s ", pp )
             portgroup = [ int(x) for x in self.vlan_to_portgroup[pp]]
-            self.logger.info("--- [_packet_in_handler] portgroup : %s ", portgroup )
+            self.logger.info("--- [SHAREDVFC - _packet_in_handler] portgroup : %s ", portgroup )
 
             out_port = ofproto.OFPP_ALL
             actions = []
             for port in portgroup:
                 if not port == in_port: 
                     actions.append(parser.OFPActionOutput(port))
+            actions.append(parser.OFPActionOutput(pp))
 
-        self.logger.info("--- [_packet_in_handler] in_port : %s ", in_port )
-        self.logger.info("--- [_packet_in_handler] actions : %s ", actions )
+        self.logger.info("--- [SHAREDVFC - _packet_in_handler] in_port : %s ", in_port )
+        self.logger.info("--- [SHAREDVFC - _packet_in_handler] actions : %s ", actions )
 
 
         #if dst in self.mac_to_port[dpid]:
@@ -294,61 +295,61 @@ class SimpleSwitch13(app_manager.RyuApp):
             else:
                 priority = 1
                 self.add_flow(datapath, priority, match, actions)
+
         data = None
+
         if msg.buffer_id == ofproto.OFP_NO_BUFFER:
             data = msg.data
    
 
-        buffer_id = msg.buffer_id
-	#if msg.buffer_id != ofproto.OFP_NO_BUFFER:
-	#    buffer_id = 0xffffffff
+        #buffer_id = msg.buffer_id
             
-        #out = parser.OFPPacketOut(datapath=datapath,
-        #                              buffer_id=msg.buffer_id,
-        #                              in_port=in_port,
-        #                              actions=actions,
-        #                              data=data)
-        #datapath.send_msg(out)
+        out = parser.OFPPacketOut(datapath=datapath,
+                                      buffer_id=msg.buffer_id,
+                                      in_port=in_port,
+                                      actions=actions,
+                                      data=data)
+        datapath.send_msg(out)
 
 
         
-	for action in actions:
-            send_data=data
-            buffer_id = msg.buffer_id
- 	    pkt = packet.Packet(array.array('B', msg.data))
-            p_arp = self._find_protocol(pkt, "arp")
-            if p_arp:
-                buffer_id = 0xffffffff
-                src_ip = str(netaddr.IPAddress(p_arp.src_ip))
-                dst_ip = str(netaddr.IPAddress(p_arp.dst_ip))
-                if p_arp.opcode == arp.ARP_REQUEST:
-                    self.logger.info("--- PacketIn: ARP_Request: %s (%s)->%s (%s)", src_ip, src, dst_ip, dst)
-                    _eth_dst_mac = dst
-            	    _arp_dst_mac = dst
-                elif p_arp.opcode == arp.ARP_REPLY:
-	    	    self.logger.info("--- PacketIn: ARP_Repy %s (%s)->%s (%s)", src_ip, src, dst_ip, dst)
-                    _eth_dst_mac = dst
-                    _arp_dst_mac = dst
+	#for action in actions:
+        #    send_data = data
+        #    buffer_id = msg.buffer_id
+ 	#    pkt = packet.Packet(array.array('B', msg.data))
+        #    p_arp = self._find_protocol(pkt, "arp")
+        #    if p_arp:
+        #        buffer_id = 0xffffffff
+        #        src_ip = str(netaddr.IPAddress(p_arp.src_ip))
+        #        dst_ip = str(netaddr.IPAddress(p_arp.dst_ip))
+        #        if p_arp.opcode == arp.ARP_REQUEST:
+        #            self.logger.info("--- [SHAREDVFC - _packet_in_handler] PacketIn: ARP_Request: %s (%s)->%s (%s)", src_ip, src, dst_ip, dst)
+        #            _eth_dst_mac = dst
+        #    	    _arp_dst_mac = dst
+        #        elif p_arp.opcode == arp.ARP_REPLY:
+	#    	    self.logger.info("--- [SHAREDVFC - _packet_in_handler] PacketIn: ARP_Repy %s (%s)->%s (%s)", src_ip, src, dst_ip, dst)
+        #            _eth_dst_mac = dst
+        #            _arp_dst_mac = dst
 
-	        e = ethernet.ethernet(_eth_dst_mac, src, ether.ETH_TYPE_ARP)
-                a = arp.arp(hwtype=1, proto=ether.ETH_TYPE_IP, hlen=6, plen=4,
-                        opcode=p_arp.opcode, src_mac=src, src_ip=src_ip,
-                        dst_mac=_arp_dst_mac, dst_ip=dst_ip)
-                p = packet.Packet()
-                p.add_protocol(e)
-                p.add_protocol(a)
-                p.serialize()
-                self.logger.info("--- p.data = " + str(p.data))
-                send_data=p.data 
+	#        e = ethernet.ethernet(_eth_dst_mac, src, ether.ETH_TYPE_ARP)
+        #        a = arp.arp(hwtype=1, proto=ether.ETH_TYPE_IP, hlen=6, plen=4,
+        #                opcode=p_arp.opcode, src_mac=src, src_ip=src_ip,
+        #                dst_mac=_arp_dst_mac, dst_ip=dst_ip)
+        #        p = packet.Packet()
+        #        p.add_protocol(e)
+        #        p.add_protocol(a)
+        #        p.serialize()
+        #        self.logger.info("--- [SHAREDVFC - _packet_in_handler] p.data = " + str(p.data))
+        #        send_data=p.data 
 
-            self.logger.info("--- single action : " + str(action) + ", data: " + str(send_data))
-            single_action = [ action ]
-            out = parser.OFPPacketOut(datapath=datapath, 
-                                      buffer_id=buffer_id,
-                                      in_port=in_port, 
-                                      actions=single_action, 
-                                      data=send_data)
-            datapath.send_msg(out)
+        #    self.logger.info("--- [SHAREDVFC - _packet_in_handler] single action : " + str(action) + ", data: " + str(send_data))
+        #    single_action = [ action ]
+        #    out = parser.OFPPacketOut(datapath=datapath, 
+        #                              buffer_id=buffer_id,
+        #                              in_port=in_port, 
+        #                              actions=single_action, 
+        #                              data=send_data)
+        #    datapath.send_msg(out)
 
     @set_ev_cls(ofp_event.EventOFPPortStatus, MAIN_DISPATCHER)
     def _port_status_handler(self, ev):
@@ -360,23 +361,23 @@ class SimpleSwitch13(app_manager.RyuApp):
 
         ofproto = msg.datapath.ofproto
         if reason == ofproto.OFPPR_ADD:
-            self.logger.info("port added %s", port_no)
+            self.logger.info("[SHAREDVFC - _port_status_handler] port added %s", port_no)
         elif reason == ofproto.OFPPR_DELETE:
-            self.logger.info("port deleted %s", port_no)
+            self.logger.info("[SHAREDVFC - _port_status_handler] port deleted %s", port_no)
             self.delete_flow(dp,port_no)
         elif reason == ofproto.OFPPR_MODIFY:
-            self.logger.info("port modified %s", port_no)
+            self.logger.info("[SHAREDVFC - _port_status_hadnler] port modified %s", port_no)
         else:
-            self.logger.info("Illegal port state %s %s", port_no, reason)
+            self.logger.info("[SHAREDVFC - _port_status_handler] Illegal port state %s %s", port_no, reason)
 
-        self.logger.info('OFPPortStatus received: reason=%s desc=%s',reason, msg.desc)
+        self.logger.info('[SHAREDVFC - _port_status_handler] OFPPortStatus received: reason=%s desc=%s',reason, msg.desc)
 
         ### Send port description request message and re-create vlan_to_portgroup
         self.vlan_to_portgroup = {}
         ####self.vlan_to_portgroup = {vlan : [] for vlan in range(VLAN_RANGE_PHYSNET1[0],VLAN_RANGE_PHYSNET1[1]+1)}
         self.vlan_to_portgroup = {p : [] for p in range(self.uplink_port_range[0],self.uplink_port_range[1]+1)}
         self.send_port_desc_stats_request(dp)
-        self.logger.info("--- [_port_status_handler] vlan_to_portgroup : %s", self.vlan_to_portgroup)
+        self.logger.info("--- [SHAREDVFC - _port_status_handler] vlan_to_portgroup : %s", self.vlan_to_portgroup)
 
 
     def send_port_desc_stats_request(self, datapath):
@@ -399,9 +400,9 @@ class SimpleSwitch13(app_manager.RyuApp):
                       p.state, p.curr, p.advertised,
                       p.supported, p.peer, p.curr_speed,
                       p.max_speed))
-            self.logger.info("--- [_port_desc_stats_reply_handler] port_name: %s ", p.name) 
+            self.logger.info("--- [SHAREDVFC - _port_desc_stats_reply_handler] port_name: %s ", p.name) 
             self.vlan_to_portgroup_handler(str(p.name))
-        self.logger.info('OFPPortDescStatsReply received: %s', ports)
+        self.logger.info('--- [SHAREDVFC - _port_desc_stats_reply_handler] OFPPortDescStatsReply received: %s', ports)
 
 
     def vlan_to_portgroup_handler(self, port_name): 
@@ -410,10 +411,10 @@ class SimpleSwitch13(app_manager.RyuApp):
 
             bridge, port_no = port_name.split('-')
             if bridge == SHARED_VFC_PHYSNET1 and ( self.uplink_port_range[0] <= int(port_no) <= self.uplink_port_range[1] ):
-                self.logger.info("--- [vlan_to_portgroup_handler] Uplink port : %s", port_no)
+                self.logger.info("--- [SHAREDVFC - vlan_to_portgroup_handler] Uplink port : %s", port_no)
                 self.set_key(self.vlan_to_portgroup, int(port_no), port_no) 
             else: 
-                self.logger.info("--- [vlan_to_portgroup_handler] Access port : %s", port_no)
+                self.logger.info("--- [SHAREDVFC - vlan_to_portgroup_handler] Access port : %s", port_no)
                 if len(str(port_no)) < 3:
                     port_no_str = '0' + str(port_no)
                 else:
@@ -428,9 +429,9 @@ class SimpleSwitch13(app_manager.RyuApp):
                     if vlan_last_3digits == port_last_3digits:
                         self.set_key(self.vlan_to_portgroup, i, port_no)
                         break
-            self.logger.info("--- [vlan_to_portgroup_handler] vlan_to_portgroup : %s", self.vlan_to_portgroup)
+            self.logger.info("--- [SHAREDVFC - vlan_to_portgroup_handler] vlan_to_portgroup : %s", self.vlan_to_portgroup)
         else:
-            self.logger.info("--- [vlan_to_portgroup_handler] LOCAL port_name : %s", port_name)
+            self.logger.info("--- [SHAREDVFC - vlan_to_portgroup_handler] LOCAL port_name : %s", port_name)
             pass
 
 
@@ -483,15 +484,11 @@ class SimpleSwitch13(app_manager.RyuApp):
                       stat.rx_frame_err, stat.rx_over_err,
                       stat.rx_crc_err, stat.collisions,
                       stat.duration_sec, stat.duration_nsec))
-        self.logger.info('PortStats: %s', ports)
+        self.logger.info('[SHAREDVFC - _port_stats_reply_handler] PortStats: %s', ports)
 
 
     # https://stackoverflow.com/a/41826126
     def set_key(self, dictionary, key, value):
-        if key not in dictionary:
-            dictionary[key] = value
-        elif type(dictionary[key]) == list:
+        if not any(value in s for s in dictionary[key]):
             dictionary[key].append(value)
-        else:
-            dictionary[key] = [dictionary[key], value]
 
