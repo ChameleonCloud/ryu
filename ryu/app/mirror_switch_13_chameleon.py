@@ -124,6 +124,10 @@ class SimpleSwitch13(app_manager.RyuApp):
         #  self.logger.info("setting mirror: " + str(in_port))
         #  self.mirror_port = in_port
 
+	# set mirror port
+ 	if self.mirror_port == None :
+           self.mirror_port = 10137
+
         pkt = packet.Packet(msg.data)
         eth = pkt.get_protocols(ethernet.ethernet)[0]
 
