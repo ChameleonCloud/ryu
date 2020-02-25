@@ -21,6 +21,7 @@ from ryu.ofproto import ofproto_v1_3
 from ryu.lib.packet import packet
 from ryu.lib.packet import ethernet
 from ryu.lib.packet import ether_types
+from ryu import cfg
 
 
 HARD_TIMEOUT = 600
@@ -32,7 +33,13 @@ class SimpleSwitch13(app_manager.RyuApp):
 
     def __init__(self, *args, **kwargs):
         super(SimpleSwitch13, self).__init__(*args, **kwargs)
-        self.mirror_port = None
+	
+	CONF = cfg.CONF
+        CONF.register_opts([
+            cfg.IntOpt('mirror_port', default=0, help = ('mirror port on the vfc'))])
+
+        self.logger.info('mirror_port = {}'.format(CONF.mirror_port))
+        self.mirror_port = CONF.mirror_port
         self.mirror_dpid = None
         self.mac_to_port = {}
 
@@ -123,10 +130,6 @@ class SimpleSwitch13(app_manager.RyuApp):
  	#if self.mirror_port == None and not str(in_port).endswith('33') and not str(in_port).endswith('37') :
         #  self.logger.info("setting mirror: " + str(in_port))
         #  self.mirror_port = in_port
-
-	# set mirror port
- 	if self.mirror_port == None :
-           self.mirror_port = 10137
 
         pkt = packet.Packet(msg.data)
         eth = pkt.get_protocols(ethernet.ethernet)[0]
