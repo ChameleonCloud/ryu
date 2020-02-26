@@ -36,11 +36,15 @@ class SimpleSwitch13(app_manager.RyuApp):
 	
 	CONF = cfg.CONF
         CONF.register_opts([
-            cfg.IntOpt('mirror_port', default=0, help = ('mirror port on the vfc'))])
+            cfg.IntOpt('mirror_port', default=0, help = ('mirror port on the vfc')),
+            cfg.IntOpt('mirror_dpid', default=0, help = ('mirror dpid of the vfc'))])
 
+	
         self.logger.info('mirror_port = {}'.format(CONF.mirror_port))
-        self.mirror_port = CONF.mirror_port
-        self.mirror_dpid = None
+        self.logger.info('mirror_dpid = {}'.format(CONF.mirror_dpid))
+
+	self.mirror_port = CONF.mirror_port
+        self.mirror_dpid = CONF.mirror_dpid
         self.mac_to_port = {}
 
     @set_ev_cls(ofp_event.EventOFPSwitchFeatures, CONFIG_DISPATCHER)
