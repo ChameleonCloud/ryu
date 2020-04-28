@@ -52,6 +52,8 @@ class SimpleSwitch13(app_manager.RyuApp):
     def __init__(self, *args, **kwargs):
         super(SimpleSwitch13, self).__init__(*args, **kwargs)
         self.mac_to_port = {}
+        self.vlan_to_portgroup = {}
+        self.logger.info("--- [SHAREDVFC - __init__] mac_to_port : %s ", self.mac_to_port )
        
 
     @set_ev_cls(ofp_event.EventOFPSwitchFeatures, CONFIG_DISPATCHER)
@@ -76,16 +78,14 @@ class SimpleSwitch13(app_manager.RyuApp):
 
         self.add_flow(datapath, 0, match, actions)
 
-  
-        
         ### Send port description request message
-        self.vlan_to_portgroup = {}
+
         self.uplink_port_range=(int(str(VLAN_RANGE_PHYSNET1[0])[-3:]),int(str(VLAN_RANGE_PHYSNET1[1])[-3:]))
 
         self.vlan_to_portgroup = {vlan : [] for vlan in range(self.uplink_port_range[0],self.uplink_port_range[1]+1)}
         self.send_port_desc_stats_request(datapath)
         self.logger.info("--- [SHAREDVFC - switch_features_handler] uplink_port_range: %s", self.uplink_port_range)
-        ###self.logger.info("--- [switch_features_handler] vlan_to_portgroup : %s", self.vlan_to_portgroup)
+        self.logger.info("--- [SHAREDVFC - switch_features_handler] initialize vlan_to_portgroup : %s", self.vlan_to_portgroup)
 
     def remove_table_flows(self, datapath, table_id, match, instructions):
         """Create OFP flow mod message to remove flows from table."""
@@ -251,28 +251,34 @@ class SimpleSwitch13(app_manager.RyuApp):
 
         ### Print mac_to_port 
         self.logger.info("--- [SHAREDVFC - _packet_in_handler] mac_to_port : %s ", self.mac_to_port )
+        self.logger.info("--- [SHAREDVFC - _packet_in_handler] vlan_to_portgroup : %s", self.vlan_to_portgroup)
 
 
         if dst in self.mac_to_port[dpid]:
-            self.logger.info("--- [SHAREDVFC - _packet_in_handler] dst in mac_to_port : %s ", dst )
-            out_port = self.mac_to_port[dpid][dst]
-            actions = [parser.OFPActionOutput(out_port)]
+            self.logger.info("--- [SHAREDVFC - _packet_in_handler] dst in mac_to_port : dst %s - src %s", dst, src )
+            if self.mac_to_port[dpid][dst] == self.mac_to_port[dpid][src]:
+                actions = []
+                self.logger.info("--- [SHAREDVFC - _packet_in_handler] pass %s %s ", self.mac_to_port[dpid][dst], self.mac_to_port[dpid][src] )
+            else:
+                out_port = self.mac_to_port[dpid][dst]
+                actions = [parser.OFPActionOutput(out_port)]
+                self.logger.info("--- [SHAREDVFC - _packet_in_handler] actions %s ", actions )
         else:
             self.logger.info("--- [SHAREDVFC - _packet_in_handler] dst NOT in mac_to_port : %s ", dst )
             pp = self.find_portgroup(in_port)
-            self.logger.info("--- [SHAREDVFC - _packet_in_handler] pp : %s ", pp )
             portgroup = [ int(x) for x in self.vlan_to_portgroup[pp]]
+            self.logger.info("--- [SHAREDVFC - _packet_in_handler] pp : %s ", pp )
             self.logger.info("--- [SHAREDVFC - _packet_in_handler] portgroup : %s ", portgroup )
 
             out_port = ofproto.OFPP_ALL
             actions = []
             for port in portgroup:
-                if not port == in_port: 
+                self.logger.info("--- [SHAREDVFC - _packet_in_handler] in_port : %s , port_in_portgroup : %s ", in_port, port )
+                if not int(port) == int(in_port): 
+                    self.logger.info("--- [SHAREDVFC - _packet_in_handler] in_port : %s != port_in_portgroup : %s ", in_port, port )
                     actions.append(parser.OFPActionOutput(port))
-            actions.append(parser.OFPActionOutput(pp))
+            ####actions.append(parser.OFPActionOutput(pp))
 
-        self.logger.info("--- [SHAREDVFC - _packet_in_handler] in_port : %s ", in_port )
-        self.logger.info("--- [SHAREDVFC - _packet_in_handler] actions : %s ", actions )
 
         # install a flow to avoid packet_in next time
         if out_port != ofproto.OFPP_ALL:
@@ -391,29 +397,36 @@ class SimpleSwitch13(app_manager.RyuApp):
 
     def vlan_to_portgroup_handler(self, port_name): 
 
-        if len(port_name.split('-')) == 2:
+        self.logger.info("--- [SHAREDVFC - vlan_to_portgroup_handler] --- ")
 
+        if len(port_name.split('-')) == 2 :
             bridge, port_no = port_name.split('-')
-            if bridge == SHARED_VFC_PHYSNET1 and ( self.uplink_port_range[0] <= int(port_no) <= self.uplink_port_range[1] ):
-                self.logger.info("--- [SHAREDVFC - vlan_to_portgroup_handler] Uplink port : %s", port_no)
-                self.set_key(self.vlan_to_portgroup, int(port_no), port_no) 
-            else: 
-                self.logger.info("--- [SHAREDVFC - vlan_to_portgroup_handler] Access port : %s", port_no)
-                if len(str(port_no)) < 3:
-                    port_no_str = '0' + str(port_no)
-                else:
-                    port_no_str = str(port_no)
-                port_last_3digits = str(port_no_str)[-3:]
-                for i in self.vlan_to_portgroup.keys():
-                    if len(str(i)) < 3:
-                        i_str = '0' + str(i)
+            if bridge == SHARED_VFC_PHYSNET1:
+                if ( self.uplink_port_range[0] <= int(port_no) <= self.uplink_port_range[1] ):
+                    self.logger.info("--- [SHAREDVFC - vlan_to_portgroup_handler] Uplink port : %s", port_no)
+                    if not int(port_no) in self.vlan_to_portgroup[int(port_no)]:
+                        self.vlan_to_portgroup[int(port_no)].append(int(port_no))
+                else: 
+                    self.logger.info("--- [SHAREDVFC - vlan_to_portgroup_handler] Server port : %s", port_no)
+                    if len(str(port_no)) < 3:
+                        port_no_str = '0' + str(port_no)
                     else:
-                        i_str = str(i)
-                    vlan_last_3digits = str(i_str)[-3:]
-                    if vlan_last_3digits == port_last_3digits:
-                        self.set_key(self.vlan_to_portgroup, i, port_no)
-                        break
-            self.logger.info("--- [SHAREDVFC - vlan_to_portgroup_handler] vlan_to_portgroup : %s", self.vlan_to_portgroup)
+                        port_no_str = str(port_no)
+                    port_last_3digits = str(port_no_str)[-3:]
+                    for i in self.vlan_to_portgroup.keys():
+                        if len(str(i)) < 3:
+                            i_str = '0' + str(i)
+                        else:
+                            i_str = str(i)
+                        vlan_last_3digits = str(i_str)[-3:]
+                        if vlan_last_3digits == port_last_3digits:
+                            if not int(port_no) in self.vlan_to_portgroup[int(i)]:
+                                 self.vlan_to_portgroup[int(i)].append(int(port_no))
+                            break
+                self.logger.info("--- [SHAREDVFC - vlan_to_portgroup_handler] vlan_to_portgroup : %s", self.vlan_to_portgroup)
+            else:
+                self.logger.info("--- [SHAREDVFC - vlan_to_portgroup_handler] Unknown bridge : %s", bridge)
+                
         else:
             self.logger.info("--- [SHAREDVFC - vlan_to_portgroup_handler] LOCAL port_name : %s", port_name)
             pass
@@ -469,10 +482,4 @@ class SimpleSwitch13(app_manager.RyuApp):
                       stat.rx_crc_err, stat.collisions,
                       stat.duration_sec, stat.duration_nsec))
         self.logger.info('[SHAREDVFC - _port_stats_reply_handler] PortStats: %s', ports)
-
-
-    # https://stackoverflow.com/a/41826126
-    def set_key(self, dictionary, key, value):
-        if not any(value in s for s in dictionary[key]):
-            dictionary[key].append(value)
 
